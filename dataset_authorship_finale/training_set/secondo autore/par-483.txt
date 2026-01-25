@@ -1,0 +1,1 @@
+Missing quotation marks and minor punctuation inconsistencies were silently corrected. However, punctuation has not been changed to comply with modern standards. A deviation in paragraph-ending punctuation in the original publication should be noted for paragraphs in which dialogue immediately followed. Both a comma and a colon were used and have been retained in this book.

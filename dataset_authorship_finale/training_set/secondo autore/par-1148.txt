@@ -1,0 +1,1 @@
+The underscore character "_" is used in this book to indicate italics markup in the original, as in "Then he _must_ hold on." The only exception to this is where it is used to indicate a subscript, specifically in H_20 and CO_2, the common chemical formulas for water and carbon dioxide referenced in the text.

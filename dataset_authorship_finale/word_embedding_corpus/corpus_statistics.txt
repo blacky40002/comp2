@@ -1,0 +1,14 @@
+STATISTICHE CORPUS WORD EMBEDDING
+=====================================
+
+Parametri estrazione: 50-100 parole/paragrafo
+
+TOTALI:
+  - Paragrafi: 5,393
+  - Parole totali: 390,857
+  - Vocabulary unico: 19,202
+
+PER AUTORE:
+  - primo autore: 1,787 paragrafi
+  - secondo autore: 1,827 paragrafi
+  - terzo autore: 1,779 paragrafi
