@@ -1,0 +1,1 @@
+The illustrations have been moved so that they do not break up paragraphs and so that they are next to the text they illustrate. Thus the page number of the illustration might not match the page number in the List of Illustrations, and the order of illustrations may not be the same in the List of Illustrations and in the book.
