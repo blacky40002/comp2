@@ -30,38 +30,45 @@ def get_nlp():
     return _nlp
 
 
-def load_documents(dataset_path, min_tokens=10):
-    documents = []
-    split_map = {"training_set": "training", "test_set": "test", "eval_set": "eval"}
+def load_dataset(dataset_dir):
+    """Carica il dataset flat. File nella forma: {split}___{autore}___{indice}.txt"""
+    import re
 
-    for split_dir, split_name in split_map.items():
-        split_path = os.path.join(dataset_path, split_dir)
-        if not os.path.exists(split_path):
+    data = {"training": [], "test": [], "eval": []}
+    pattern = re.compile(r"^(training|test|eval)___{author}___\\d+\.txt$")
+    split_map = {"training": "training", "test": "test", "eval": "eval"}
+
+    for filename in sorted(os.listdir(dataset_dir)):
+        m = pattern.match(filename)
+        if not m:
             continue
+        split_key = split_map[m.group(1)]
+        author = m.group(2)
 
-        for author in os.listdir(split_path):
-            author_path = os.path.join(split_path, author)
-            if not os.path.isdir(author_path):
-                continue
+        with open(os.path.join(dataset_dir, filename), "r", encoding="utf-8") as f:
+            text = f.read().strip()
+        if text:
+            data[split_key].append((text, author))
 
-            for filename in os.listdir(author_path):
-                if not filename.endswith(".txt"):
-                    continue
+    return data
 
-                file_path = os.path.join(author_path, filename)
-                with open(file_path, "r", encoding="utf-8") as handle:
-                    text = handle.read().strip()
 
-                nlp = get_nlp()
-                doc = nlp(text)
-                tokens = [
-                    Token(word=token.text.lower(), pos=token.pos_)
-                    for token in doc
-                    if not token.is_space and not token.is_punct
-                ]
+def load_documents(dataset_path, min_tokens=10):
+    """Carica documenti dal dataset flat e li processa con spaCy."""
+    raw_data = load_dataset(dataset_path)
+    documents = []
+    nlp = get_nlp()
 
-                if len(tokens) >= min_tokens:
-                    documents.append(Document(tokens=tokens, author=author, split=split_name))
+    for split_name, items in raw_data.items():
+        for text, author in items:
+            doc = nlp(text)
+            tokens = [
+                Token(word=token.text.lower(), pos=token.pos_)
+                for token in doc
+                if not token.is_space and not token.is_punct
+            ]
+            if len(tokens) >= min_tokens:
+                documents.append(Document(tokens=tokens, author=author, split=split_name))
 
     return documents
 
@@ -85,12 +92,10 @@ def load_embeddings_from_sqlite(db_path, vocab):
     conn.close()
     return embeddings
 
-
 def compute_embeddings_mean(vectors, dim):
     if not vectors:
         return np.zeros(dim)
     return np.mean(np.array(vectors), axis=0)
-
 
 def aggregate_vectors(vectors, method, dim):
     if not vectors:
@@ -103,7 +108,6 @@ def aggregate_vectors(vectors, method, dim):
     if method == "sum":
         return np.sum(arr, axis=0)
     return np.mean(arr, axis=0)
-
 
 def document_embedding(tokens, embeddings, dim, config):
     method = config["method"]
@@ -130,7 +134,6 @@ def document_embedding(tokens, embeddings, dim, config):
     ]
     return aggregate_vectors(vectors, method, dim)
 
-
 def extract_vocab(documents, min_freq=2):
     counter = Counter()
     for doc in documents:
@@ -138,14 +141,12 @@ def extract_vocab(documents, min_freq=2):
             counter[token.word] += 1
     return [word for word, count in counter.items() if count >= min_freq]
 
-
 def prepare_data(docs, embeddings, dim, config):
     X, y = [], []
     for doc in docs:
         X.append(document_embedding(doc.tokens, embeddings, dim, config))
         y.append(doc.author)
     return np.array(X), np.array(y)
-
 
 def run(dataset_path, embeddings_db_path):
     documents = load_documents(dataset_path)
@@ -202,7 +203,7 @@ def run(dataset_path, embeddings_db_path):
         print(f"  Eval F1-Macro: {eval_f1:.4f}")
 
     print("\nRISULTATI VALIDATION")
-    print(f"{'Configurazione':<20} {'Eval Acc':<12} {'Eval F1':<12}")
+    print(f"{ 'Configurazione':<20} {'Eval Acc':<12} {'Eval F1':<12}")
     print("-" * 50)
     for result in results:
         print(
@@ -229,8 +230,32 @@ def run(dataset_path, embeddings_db_path):
         print(f"  f1_macro={f1_score(y_test, pred, average='macro'):.4f}")
         print(classification_report(y_test, pred, zero_division=0))
 
-    return svm, scaler
+        # --- PLOTTING ---
+        try:
+            import utils_plot
+            utils_plot.set_style()
 
+            # 1. Confronto Configurazioni
+            plot_data = [{"name": r["name"], "f1_macro": r["eval_f1"]} for r in results]
+            utils_plot.plot_model_comparison(
+                plot_data, 
+                metric_key="f1_macro", 
+                title="Task 4 - Confronto Metodi Embedding (Validation)", 
+                filename="04_model_comparison.png"
+            )
+
+            # 2. Matrice di Confusione (Test Set)
+            utils_plot.plot_confusion_matrix(
+                y_test, pred, 
+                labels=svm.classes_,
+                title=f"Task 4 - Confusion Matrix ({best['name']})",
+                filename="04_confusion_matrix.png"
+            )
+
+        except ImportError:
+            print("Modulo utils_plot non trovato, salto generazione grafici.")
+
+    return svm, scaler
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

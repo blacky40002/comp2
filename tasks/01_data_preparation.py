@@ -39,9 +39,10 @@ def read_books(author_dir, filenames):
     for filename in filenames:
         file_path = os.path.join(author_dir, filename)
         try:
-            with open(file_path, "r", encoding="utf-8") as handle:
+            with open(file_path, "r", encoding="utf-8-sig") as handle:
                 text = handle.read()
-        except OSError:
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"ATTENZIONE: file saltato {file_path} ({e})")
             continue
 
         content = extract_gutenberg_content(text)
@@ -109,7 +110,12 @@ def count_words(text):
 def clean_paragraph(paragraph):
     if not paragraph:
         return ""
-    paragraph = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", paragraph)
+    paragraph = re.sub(
+        r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f"
+        r"\u00ad\u200b-\u200f\u2028-\u2029\ufeff\ufffd]",
+        "",
+        paragraph,
+    )
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
     if re.match(r"^[^\w]*$", paragraph) or re.match(r"^\d+\.?\s*$", paragraph):
         return ""
@@ -134,120 +140,89 @@ def paragraphs_from_text(text, min_words, max_words):
 
 def paragraphs_from_file(file_path, min_words, max_words):
     try:
-        with open(file_path, "r", encoding="utf-8") as handle:
+        with open(file_path, "r", encoding="utf-8-sig") as handle:
             text = handle.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"ATTENZIONE: file saltato {file_path} ({e})")
         return []
 
     return paragraphs_from_text(text, min_words, max_words)
 
 
-def write_paragraphs(paragraphs, output_dir, prefix="par"):
+def write_paragraphs(paragraphs, output_dir, split, author):
+    """Scrive i paragrafi con naming convention SPLIT___AUTORE___ID.txt"""
+    author_tag = author.replace(" ", "_")
     os.makedirs(output_dir, exist_ok=True)
     for i, paragraph in enumerate(paragraphs, 1):
-        name = f"{prefix}-{i:03d}.txt"
+        name = f"{split}___{author_tag}___{i:05d}.txt"
         out_path = os.path.join(output_dir, name)
         with open(out_path, "w", encoding="utf-8") as handle:
             handle.write(paragraph)
 
 
-def create_word_embedding_corpus(training_dir, test_val_dir, output_dir, min_words, max_words):
-    embedding_dir = os.path.join(output_dir, "word_embedding_corpus")
-    os.makedirs(embedding_dir, exist_ok=True)
+def build_dataset(training_dir, test_val_dir, output_dir, min_words, max_words, test_size):
+    """Genera dataset flat: tutti i file in una sola directory.
 
-    all_paragraphs = []
-    by_author = {author: [] for author in AUTHORS}
-
-    for source_dir in (training_dir, test_val_dir):
-        for author in AUTHORS:
-            name = f"{author.replace(' ', '_')}_tutti_i_libri.txt"
-            file_path = os.path.join(source_dir, name)
-            if not os.path.exists(file_path):
-                continue
-
-            paragraphs = paragraphs_from_file(file_path, min_words, max_words)
-            all_paragraphs.extend(paragraphs)
-            by_author[author].extend(paragraphs)
-
-    full_corpus = os.path.join(embedding_dir, "corpus_completo.txt")
-    with open(full_corpus, "w", encoding="utf-8") as handle:
-        for paragraph in all_paragraphs:
-            handle.write(paragraph.replace("\n", " ") + "\n")
-
-    for author, paragraphs in by_author.items():
-        author_name = f"corpus_{author.replace(' ', '_')}.txt"
-        out_path = os.path.join(embedding_dir, author_name)
-        with open(out_path, "w", encoding="utf-8") as handle:
-            for paragraph in paragraphs:
-                handle.write(paragraph.replace("\n", " ") + "\n")
-
-    all_words = []
-    for paragraph in all_paragraphs:
-        all_words.extend(re.findall(r"\b\w+\b", paragraph.lower()))
-
-    stats_path = os.path.join(embedding_dir, "corpus_statistics.txt")
-    with open(stats_path, "w", encoding="utf-8") as handle:
-        handle.write("STATISTICHE CORPUS WORD EMBEDDING\n")
-        handle.write("=" * 37 + "\n\n")
-        handle.write(f"Parametri estrazione: {min_words}-{max_words} parole/paragrafo\n\n")
-        handle.write("TOTALI:\n")
-        handle.write(f"  - Paragrafi: {len(all_paragraphs):,}\n")
-        handle.write(f"  - Parole totali: {len(all_words):,}\n")
-        handle.write(f"  - Vocabulary unico: {len(set(all_words)):,}\n\n")
-        handle.write("PER AUTORE:\n")
-        for author, paragraphs in by_author.items():
-            handle.write(f"  - {author}: {len(paragraphs):,} paragrafi\n")
-
-    return embedding_dir
-
-
-def build_dataset(training_dir, test_val_dir, output_dir, min_words, max_words, test_size, create_embeddings):
+    Nomi file: {split}___{autore}___{indice}.txt
+    Il nome del file codifica split e autore, senza bisogno di sottocartelle.
+    """
     reset_dir(output_dir)
 
-    if create_embeddings:
-        create_word_embedding_corpus(training_dir, test_val_dir, output_dir, min_words, max_words)
-
-    for split in ("training_set", "test_set", "eval_set"):
-        for author in AUTHORS:
-            os.makedirs(os.path.join(output_dir, split, author), exist_ok=True)
-
-    training_stats = {}
-    test_eval_stats = {}
+    stats = {"training": {}, "test": {}, "eval": {}}
 
     for author in AUTHORS:
-        name = f"{author.replace(' ', '_')}_tutti_i_libri.txt"
+        author_tag = author.replace(" ", "_")
+        name = f"{author_tag}_tutti_i_libri.txt"
+
+        # Paragrafi di training
         train_path = os.path.join(training_dir, name)
         paragraphs = paragraphs_from_file(train_path, min_words, max_words)
-        training_stats[author] = len(paragraphs)
+        stats["training"][author] = len(paragraphs)
         if paragraphs:
-            write_paragraphs(paragraphs, os.path.join(output_dir, "training_set", author), "par")
+            write_paragraphs(paragraphs, output_dir, "training", author)
 
-    for author in AUTHORS:
-        name = f"{author.replace(' ', '_')}_tutti_i_libri.txt"
+        # Paragrafi di test/eval
         test_val_path = os.path.join(test_val_dir, name)
-        paragraphs = paragraphs_from_file(test_val_path, min_words, max_words)
+        tv_paragraphs = paragraphs_from_file(test_val_path, min_words, max_words)
 
-        if len(paragraphs) >= 2:
-            par_test, par_eval = train_test_split(paragraphs, test_size=test_size, random_state=42)
+        if len(tv_paragraphs) >= 2:
+            par_test, par_eval = train_test_split(tv_paragraphs, test_size=test_size, random_state=42)
         else:
-            par_test, par_eval = paragraphs, []
+            par_test, par_eval = tv_paragraphs, []
 
-        test_eval_stats[author] = {
-            "totale": len(paragraphs),
-            "test": len(par_test),
-            "eval": len(par_eval),
-        }
+        stats["test"][author] = len(par_test)
+        stats["eval"][author] = len(par_eval)
 
         if par_test:
-            write_paragraphs(par_test, os.path.join(output_dir, "test_set", author), "par")
+            write_paragraphs(par_test, output_dir, "test", author)
         if par_eval:
-            write_paragraphs(par_eval, os.path.join(output_dir, "eval_set", author), "par")
+            write_paragraphs(par_eval, output_dir, "eval", author)
 
-    return {
-        "output_dir": output_dir,
-        "training_stats": training_stats,
-        "test_eval_stats": test_eval_stats,
-    }
+    return {"output_dir": output_dir, "stats": stats}
+
+
+def load_dataset(dataset_dir):
+    """Carica il dataset flat. File nella forma: {split}___{autore}___{indice}.txt
+
+    Returns: {"training": [(testo, autore), ...], "test": [...], "eval": [...]}
+    """
+    data = {"training": [], "test": [], "eval": []}
+    pattern = re.compile(r"^(training|test|eval)___(.+)___\d+\.txt$")
+    split_map = {"training": "training", "test": "test", "eval": "eval"}
+
+    for filename in sorted(os.listdir(dataset_dir)):
+        m = pattern.match(filename)
+        if not m:
+            continue
+        split_key = split_map[m.group(1)]
+        author = m.group(2)
+
+        with open(os.path.join(dataset_dir, filename), "r", encoding="utf-8") as f:
+            text = f.read().strip()
+        if text:
+            data[split_key].append((text, author))
+
+    return data
 
 
 def main():
@@ -284,14 +259,11 @@ def main():
         min_words=MIN_WORDS,
         max_words=MAX_WORDS,
         test_size=TEST_SIZE,
-        create_embeddings=True,
     )
-    print(f"Step 2: dataset creato -> {result['output_dir']}")
-
-    training_total = sum(result["training_stats"].values())
-    test_total = sum(stats["test"] for stats in result["test_eval_stats"].values())
-    eval_total = sum(stats["eval"] for stats in result["test_eval_stats"].values())
-    print(f"Finale: training={training_total}, test={test_total}, eval={eval_total}")
+    print(f"\nStep 2: dataset creato -> {result['output_dir']}")
+    for split_name, author_counts in result["stats"].items():
+        total = sum(author_counts.values())
+        print(f"  {split_name}: {total} paragrafi")
 
 
 if __name__ == "__main__":

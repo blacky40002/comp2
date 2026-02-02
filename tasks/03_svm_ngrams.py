@@ -23,7 +23,7 @@ from sklearn.preprocessing import MaxAbsScaler
 from sklearn.svm import LinearSVC
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 
-AUTHORS = ["primo autore", "secondo autore", "terzo autore"]
+AUTHORS = ["primo_autore", "secondo_autore", "terzo_autore"]
 
 # Carica modello spaCy (lazy loading)
 _nlp = None
@@ -120,50 +120,42 @@ class Document:
         return sum(sentence.get_num_chars() for sentence in self.sentences)
 
 
+def load_dataset(dataset_dir):
+    """Carica il dataset flat. File nella forma: {split}___{autore}___{indice}.txt"""
+    import re
+
+    data = {"training": [], "test": [], "eval": []}
+    pattern = re.compile(r"^(training|test|eval)___(.+)___\d+\.txt$")
+    split_map = {"training": "training", "test": "test", "eval": "eval"}
+
+    for filename in sorted(os.listdir(dataset_dir)):
+        m = pattern.match(filename)
+        if not m:
+            continue
+        split_key = split_map[m.group(1)]
+        author = m.group(2)
+
+        with open(os.path.join(dataset_dir, filename), "r", encoding="utf-8") as f:
+            text = f.read().strip()
+        if text:
+            data[split_key].append((text, author))
+
+    return data
+
+
 def load_documents(base_path):
-    """Carica documenti dalla struttura di cartelle."""
+    """Carica documenti dal dataset flat e li processa con spaCy."""
+    raw_data = load_dataset(base_path)
     datasets = {"training": [], "test": [], "eval": []}
-    split_map = {"training_set": "training", "test_set": "test", "eval_set": "eval"}
 
     print("Caricamento documenti...")
-
-    for split_dir, split_name in split_map.items():
-        split_path = os.path.join(base_path, split_dir)
-
-        if not os.path.exists(split_path):
-            print(f"  Cartella non trovata: {split_path}")
-            continue
-
-        for author in AUTHORS:
-            author_path = os.path.join(split_path, author)
-
-            if not os.path.exists(author_path):
-                continue
-
-            doc_count = 0
-            for filename in os.listdir(author_path):
-                if not filename.endswith(".txt"):
-                    continue
-
-                file_path = os.path.join(author_path, filename)
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        text = f.read().strip()
-                except Exception as e:
-                    continue
-
-                if not text:
-                    continue
-
-                doc_id = f"{author}_{filename}"
-                doc = Document(doc_id, author, split_name)
-                doc.process_with_spacy(text)
-
-                if doc.num_tokens() > 0:
-                    datasets[split_name].append(doc)
-                    doc_count += 1
-
-            print(f"  {split_name}/{author}: {doc_count} documenti")
+    for split_name, items in raw_data.items():
+        for i, (text, author) in enumerate(items):
+            doc = Document(f"{split_name}_{i}", author, split_name)
+            doc.process_with_spacy(text)
+            if doc.num_tokens() > 0:
+                datasets[split_name].append(doc)
+        print(f"  {split_name}: {len(datasets[split_name])} documenti")
 
     return datasets
 
@@ -483,8 +475,35 @@ def run(base_path):
         print(f"  F1-Macro: {f1_score(y_test, pred, average='macro'):.4f}")
         print(classification_report(y_test, pred, target_names=AUTHORS, zero_division=0))
 
-    # Feature importance
+    # Feature importance testuale
     analyze_feature_importance(svm, vectorizer, top_n=15)
+
+    # --- PLOTTING ---
+    try:
+        from . import utils_plot
+        utils_plot.set_style()
+
+        # 1. Confronto Configurazioni
+        # Rinominiamo le chiavi per adattarle a utils_plot
+        plot_data = [{"name": r["config_name"], "f1_macro": r["eval_f1_macro"]} for r in all_results]
+        utils_plot.plot_model_comparison(
+            plot_data, 
+            metric_key="f1_macro", 
+            title="Task 3 - Confronto Configurazioni N-grammi (Validation)", 
+            filename="03_model_comparison.png"
+        )
+
+        # 2. Matrice di Confusione (Test Set)
+        if test_docs:
+            utils_plot.plot_confusion_matrix(
+                y_test, pred, 
+                labels=svm.classes_,
+                title=f"Task 3 - Confusion Matrix ({best['config_name']})",
+                filename="03_confusion_matrix.png"
+            )
+
+    except ImportError:
+        print("Modulo utils_plot non trovato, salto generazione grafici.")
 
     print("\n" + "=" * 70)
     print("PIPELINE COMPLETATA!")

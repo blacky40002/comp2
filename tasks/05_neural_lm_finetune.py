@@ -25,7 +25,7 @@ from transformers import (
 )
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 
-AUTHORS = ["primo autore", "secondo autore", "terzo autore"]
+AUTHORS = ["primo_autore", "secondo_autore", "terzo_autore"]
 AUTHOR_TO_ID = {a: i for i, a in enumerate(AUTHORS)}
 ID_TO_AUTHOR = {i: a for i, a in enumerate(AUTHORS)}
 
@@ -66,29 +66,37 @@ class AuthorshipDataset(Dataset):
         }
 
 
-def load_data(base_path):
+def load_dataset(dataset_dir):
+    """Carica il dataset flat. File nella forma: {split}___{autore}___{indice}.txt"""
+    import re
+
     data = {"training": [], "test": [], "eval": []}
-    split_map = {"training_set": "training", "test_set": "test", "eval_set": "eval"}
+    pattern = re.compile(r"^(training|test|eval)___(.+)___\d+\.txt$")
+    split_map = {"training": "training", "test": "test", "eval": "eval"}
 
-    for split_dir, split_name in split_map.items():
-        split_path = os.path.join(base_path, split_dir)
-        if not os.path.exists(split_path):
+    for filename in sorted(os.listdir(dataset_dir)):
+        m = pattern.match(filename)
+        if not m:
             continue
+        split_key = split_map[m.group(1)]
+        author = m.group(2)
 
-        for author in AUTHORS:
-            author_path = os.path.join(split_path, author)
-            if not os.path.exists(author_path):
-                continue
+        with open(os.path.join(dataset_dir, filename), "r", encoding="utf-8") as f:
+            text = f.read().strip()
+        if text:
+            data[split_key].append((text, author))
 
-            for filename in os.listdir(author_path):
-                if not filename.endswith(".txt"):
-                    continue
+    return data
 
-                with open(os.path.join(author_path, filename), "r", encoding="utf-8") as f:
-                    text = f.read().strip()
 
-                if text:
-                    data[split_name].append((text, AUTHOR_TO_ID[author]))
+def load_data(base_path):
+    """Carica dati dal dataset flat e converte autori in ID numerici."""
+    raw_data = load_dataset(base_path)
+    data = {"training": [], "test": [], "eval": []}
+
+    for split_name, items in raw_data.items():
+        for text, author in items:
+            data[split_name].append((text, AUTHOR_TO_ID[author]))
 
     return data
 
@@ -227,11 +235,37 @@ def run(base_path, num_epochs=6, batch_size=16, lr=2e-5, max_length=128):
             f"Val Acc={val_acc:.4f}, Val F1={val_f1:.4f}"
         )
 
-    output_dir = os.path.dirname(os.path.abspath(__file__))
-    plot_curves(train_losses, val_losses, val_accs, val_f1s,
-                os.path.join(output_dir, "training_curves.png"))
+    # --- PLOTTING ---
+    try:
+        from . import utils_plot
+        utils_plot.set_style()
+        
+        # 1. Curve di Training (Sostituisce plot_curves interno)
+        utils_plot.plot_training_curves(
+            train_losses, val_losses, val_accs, val_f1s,
+            filename="05_training_curves.png"
+        )
+        
+        # 2. Matrice di Confusione (Test Set)
+        # ID_TO_AUTHOR per avere label leggibili
+        test_true_labels = [ID_TO_AUTHOR[i] for i in test_true]
+        test_pred_labels = [ID_TO_AUTHOR[i] for i in test_preds]
+        
+        utils_plot.plot_confusion_matrix(
+            test_true_labels, test_pred_labels,
+            labels=AUTHORS,
+            title="Task 5 - Confusion Matrix (RoBERTa Fine-tuning)",
+            filename="05_confusion_matrix.png"
+        )
+        
+    except ImportError:
+        print("Modulo utils_plot non trovato, salto generazione grafici.")
+        # Fallback al plot locale se fallisce
+        output_dir = os.path.dirname(os.path.abspath(__file__))
+        plot_curves(train_losses, val_losses, val_accs, val_f1s,
+                    os.path.join(output_dir, "training_curves_fallback.png"))
 
-    print(f"\n[5/5] Valutazione TEST SET (dopo epoca {num_epochs})...")
+    print("\n[5/5] Valutazione TEST SET (dopo epoca {num_epochs})...")
     print("-" * 60)
 
     test_loss, test_acc, test_f1, test_preds, test_true = evaluate(model, test_loader)

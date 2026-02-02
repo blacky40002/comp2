@@ -2,12 +2,13 @@
 Task 1: SVM lineare con features Profiling-UD.
 
 Per preparare i dati:
-1. Zippa le cartelle training_set, test_set, eval_set da dataset_authorship_finale
+1. Zippa tutti i file .txt da dataset_authorship_finale/
 2. Carica su http://linguistic-profiling.italianlp.it/
 3. Scarica il CSV e aggiorna il path sotto
 """
 
 import os
+import re
 import csv
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -17,49 +18,14 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report
 from sklearn.dummy import DummyClassifier
 
 AUTHORS = ["primo_autore", "secondo_autore", "terzo_autore"]
-AUTHOR_MAP = {
-    "primo autore": "primo_autore",
-    "secondo autore": "secondo_autore",
-    "terzo autore": "terzo_autore",
-    "primo_autore": "primo_autore",
-    "secondo_autore": "secondo_autore",
-    "terzo_autore": "terzo_autore",
-}
 
 
-def build_dataset_from_structure(base_path):
-    """Costruisce dizionario dataset dalla struttura cartelle."""
+def load_profiling_features(csv_path):
+    """Carica features dal CSV di Profiling-UD, parsando split e autore dal nome file."""
+    pattern = re.compile(r"^(training|test|eval)___(.+)___(\d+)$")
+    split_names = {"training": "training", "test": "test", "eval": "eval"}
+
     dataset = {}
-    split_map = {"training_set": "training", "test_set": "test", "eval_set": "eval"}
-
-    for split_dir, split_name in split_map.items():
-        split_path = os.path.join(base_path, split_dir)
-        if not os.path.exists(split_path):
-            continue
-
-        for author_dir in os.listdir(split_path):
-            author_path = os.path.join(split_path, author_dir)
-            if not os.path.isdir(author_path):
-                continue
-
-            author = AUTHOR_MAP.get(author_dir.lower(), author_dir)
-
-            for filename in os.listdir(author_path):
-                if not filename.endswith(".txt"):
-                    continue
-
-                doc_id = f"{split_dir}/{author_dir}/{filename}".replace(".txt", "")
-                dataset[doc_id] = {
-                    "split": split_name,
-                    "author": author,
-                    "features": None,
-                }
-
-    return dataset
-
-
-def load_profiling_features(csv_path, dataset):
-    """Carica features dal CSV di Profiling-UD e le aggiunge al dataset."""
     feature_names = None
 
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -73,36 +39,20 @@ def load_profiling_features(csv_path, dataset):
             filename = row[0]
             features = [float(x) for x in row[1:]]
 
-            matched = False
-            for doc_id in dataset:
-                if doc_id in filename or filename in doc_id:
-                    dataset[doc_id]["features"] = features
-                    matched = True
-                    break
+            doc_id = os.path.basename(filename)
+            for ext in (".conllu", ".txt"):
+                if doc_id.endswith(ext):
+                    doc_id = doc_id[: -len(ext)]
 
-            if not matched:
-                for key, value in AUTHOR_MAP.items():
-                    if key in filename.lower():
-                        author = value
-                        break
-                else:
-                    continue
-
-                if "training" in filename.lower():
-                    split = "training"
-                elif "test" in filename.lower():
-                    split = "test"
-                elif "eval" in filename.lower():
-                    split = "eval"
-                else:
-                    continue
-
-                doc_id = filename.replace(".conllu", "").replace(".txt", "")
+            m = pattern.match(doc_id)
+            if m:
                 dataset[doc_id] = {
-                    "split": split,
-                    "author": author,
+                    "split": split_names[m.group(1)],
+                    "author": m.group(2),
                     "features": features,
                 }
+            else:
+                print(f"ATTENZIONE: '{doc_id}' non corrisponde al pattern atteso")
 
     return feature_names, dataset
 
@@ -209,19 +159,13 @@ def get_top_features(svm, feature_names, top_n=20):
             print(f"  {i:2d}. {feat:<30} {sign}{abs(coef):.4f}")
 
 
-def run(csv_path, base_path=None):
+def run(csv_path):
     """Pipeline completa."""
     print("=" * 60)
     print("TASK 1: SVM + PROFILING-UD")
     print("=" * 60)
 
-    if base_path:
-        dataset = build_dataset_from_structure(base_path)
-        print(f"Documenti da struttura: {len(dataset)}")
-    else:
-        dataset = {}
-
-    feature_names, dataset = load_profiling_features(csv_path, dataset)
+    feature_names, dataset = load_profiling_features(csv_path)
     print(f"Features: {len(feature_names)}")
     print(f"Documenti con features: {sum(1 for d in dataset.values() if d['features'] is not None)}")
 
@@ -264,16 +208,45 @@ def run(csv_path, base_path=None):
         print(f"  F1-Macro: {f1_score(y_eval, eval_pred, average='macro'):.4f}")
         print(classification_report(y_eval, eval_pred, zero_division=0))
 
-    get_top_features(svm, feature_names, top_n=20)
+    # ... (codice esistente per feature importance testuale)
+
+    # --- PLOTTING ---
+    try:
+        from . import utils_plot
+        utils_plot.set_style()
+        
+        # 1. Matrice di Confusione (Test Set)
+        if len(X_test) > 0:
+            utils_plot.plot_confusion_matrix(
+                y_test, test_pred, 
+                labels=svm.classes_,
+                title="Task 2 - Confusion Matrix (Profiling UD)",
+                filename="02_confusion_matrix.png"
+            )
+
+        # 2. Feature Importance (Top 20 per il primo autore come esempio)
+        # Nota: LinearSVC multiclasse ha un coef_ per classe (n_classes, n_features)
+        # Prendiamo il primo autore (indice 0)
+        first_author_idx = 0
+        author_name = svm.classes_[first_author_idx]
+        utils_plot.plot_feature_importance(
+            feature_names, 
+            svm.coef_[first_author_idx], 
+            title=f"Task 2 - Feature Importance ({author_name})", 
+            filename=f"02_feature_importance_{author_name}.png"
+        )
+            
+    except ImportError:
+        print("Modulo utils_plot non trovato, salto generazione grafici.")
 
     return svm, scaler, feature_names
 
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    dataset_path = os.path.join(base_dir, "dataset_authorship_finale")
 
     possible_csv = [
+        os.path.join(base_dir, "ProfilingUD documents parsed", "17566.csv"),
         os.path.join(base_dir, "profiling_ud_features.csv"),
         os.path.join(base_dir, "16596.csv"),
     ]
@@ -287,12 +260,12 @@ def main():
     if csv_path is None:
         print("ERRORE: CSV Profiling-UD non trovato!")
         print("\nIstruzioni:")
-        print("1. Zippa le cartelle in dataset_authorship_finale/")
+        print("1. Zippa i file .txt da dataset_authorship_finale/")
         print("2. Carica su http://linguistic-profiling.italianlp.it/")
         print("3. Scarica il CSV e salvalo come profiling_ud_features.csv")
         return
 
-    run(csv_path, dataset_path)
+    run(csv_path)
 
 
 if __name__ == "__main__":
