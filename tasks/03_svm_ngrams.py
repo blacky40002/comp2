@@ -1,528 +1,160 @@
-"""
-Task 2: Classificatore basato su SVM lineari e n-grammi.
-
-Utilizza n-grammi di:
-- Caratteri
-- Parole (forme)
-- Lemmi
-- Part-of-speech (POS)
-
-Richiede: spaCy con modello inglese (python -m spacy download en_core_web_sm)
-
-Output:
-- Confronto diverse configurazioni sul validation set
-- Valutazione miglior sistema su test set
-"""
+"Task 3: SVM lineare con n-grammi."
 
 import os
-from collections import defaultdict
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 import numpy as np
 import spacy
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.preprocessing import MaxAbsScaler
 from sklearn.svm import LinearSVC
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.metrics import accuracy_score
+import seville.tasks.utils_shared as utils
 
-AUTHORS = ["primo_autore", "secondo_autore", "terzo_autore"]
-
-# Carica modello spaCy (lazy loading)
 _nlp = None
-
-
 def get_nlp():
-    """Carica il modello spaCy solo quando necessario."""
     global _nlp
     if _nlp is None:
         try:
             _nlp = spacy.load("en_core_web_sm")
         except OSError:
-            print("Modello spaCy non trovato. Installalo con:")
-            print("  python -m spacy download en_core_web_sm")
+            print("Installare modello: python -m spacy download en_core_web_sm")
             raise
     return _nlp
 
-
-class Token:
-    """Token minimale per parola, lemma e POS."""
-
-    def __init__(self, word, lemma, pos_tag):
-        self.word = word
-        self.lemma = lemma
-        self.pos_tag = pos_tag
-
-    def get_num_chars(self):
-        return len(self.word)
-
-
-class Sentence:
-    """Frase con lista di token."""
-
-    def __init__(self):
-        self.tokens = []
-
-    def add_token(self, token):
-        self.tokens.append(token)
-
-    def get_words(self):
-        return [token.word for token in self.tokens]
-
-    def get_lemmas(self):
-        return [token.lemma for token in self.tokens]
-
-    def get_pos(self):
-        return [token.pos_tag for token in self.tokens]
-
-    def get_num_tokens(self):
-        return len(self.tokens)
-
-    def get_num_chars(self):
-        if not self.tokens:
-            return 0
-        num_chars = sum(token.get_num_chars() for token in self.tokens)
-        return num_chars + self.get_num_tokens() - 1
-
-
-class Document:
-    """Rappresenta un documento con frasi annotate."""
-
-    def __init__(self, doc_id, author, split):
-        self.doc_id = doc_id
-        self.author = author
-        self.split = split
-        self.sentences = []
-        self.text = ""
-
-    def process_with_spacy(self, text):
-        """Processa il testo con spaCy per estrarre token, lemmi e POS."""
-        self.text = text
-        nlp = get_nlp()
-        doc = nlp(text)
-
-        sentences = list(doc.sents) if doc.has_annotation("SENT_START") else []
-        if not sentences:
-            sentences = [doc]
-
-        for sent in sentences:
-            sentence = Sentence()
-            for token in sent:
-                if token.is_space:
-                    continue
-                sentence.add_token(
-                    Token(token.text.lower(), token.lemma_.lower(), token.pos_)
-                )
-            if sentence.get_num_tokens() > 0:
-                self.sentences.append(sentence)
-
-    def num_tokens(self):
-        return sum(sentence.get_num_tokens() for sentence in self.sentences)
-
-    def num_chars(self):
-        return sum(sentence.get_num_chars() for sentence in self.sentences)
-
-
-def load_dataset(dataset_dir):
-    """Carica il dataset flat. File nella forma: {split}___{autore}___{indice}.txt"""
-    import re
-
-    data = {"training": [], "test": [], "eval": []}
-    pattern = re.compile(r"^(training|test|eval)___(.+)___\d+\.txt$")
-    split_map = {"training": "training", "test": "test", "eval": "eval"}
-
-    for filename in sorted(os.listdir(dataset_dir)):
-        m = pattern.match(filename)
-        if not m:
-            continue
-        split_key = split_map[m.group(1)]
-        author = m.group(2)
-
-        with open(os.path.join(dataset_dir, filename), "r", encoding="utf-8") as f:
-            text = f.read().strip()
-        if text:
-            data[split_key].append((text, author))
-
-    return data
-
-
-def load_documents(base_path):
-    """Carica documenti dal dataset flat e li processa con spaCy."""
-    raw_data = load_dataset(base_path)
-    datasets = {"training": [], "test": [], "eval": []}
-
-    print("Caricamento documenti...")
-    for split_name, items in raw_data.items():
-        for i, (text, author) in enumerate(items):
-            doc = Document(f"{split_name}_{i}", author, split_name)
-            doc.process_with_spacy(text)
-            if doc.num_tokens() > 0:
-                datasets[split_name].append(doc)
-        print(f"  {split_name}: {len(datasets[split_name])} documenti")
-
-    return datasets
-
-
-def extract_char_ngrams(text, n):
-    """Estrae n-grammi di caratteri da una stringa."""
-    ngrams = {}
-
-    for i in range(len(text) - n + 1):
-        ngram = f"CHAR_{n}_{text[i:i+n]}"
-        ngrams[ngram] = ngrams.get(ngram, 0) + 1
-
-    return ngrams
-
-
-def extract_token_ngrams(tokens, n, prefix):
-    """Estrae n-grammi da lista di token."""
-    ngrams = {}
-
-    for i in range(len(tokens) - n + 1):
-        ngram = f"{prefix}_{n}_" + "_".join(tokens[i : i + n])
-        ngrams[ngram] = ngrams.get(ngram, 0) + 1
-
-    return ngrams
-
-
-def extract_document_features(doc, config):
-    """Estrae features da un documento secondo la configurazione."""
-    token_features = {}
-    char_features = {}
-
-    for sentence in doc.sentences:
-        words = sentence.get_words()
-        lemmas = sentence.get_lemmas()
-        pos_tags = sentence.get_pos()
-        sentence_text = " ".join(words)
-
-        # N-grammi di caratteri (per frase)
-        if "char_ngrams" in config:
-            for n in config["char_ngrams"]:
-                features = extract_char_ngrams(sentence_text, n)
-                for key, value in features.items():
-                    char_features[key] = char_features.get(key, 0) + value
-
-        # N-grammi di parole
-        if "word_ngrams" in config:
-            for n in config["word_ngrams"]:
-                features = extract_token_ngrams(words, n, "WORD")
-                for key, value in features.items():
-                    token_features[key] = token_features.get(key, 0) + value
-
-        # N-grammi di lemmi
-        if "lemma_ngrams" in config:
-            for n in config["lemma_ngrams"]:
-                features = extract_token_ngrams(lemmas, n, "LEMMA")
-                for key, value in features.items():
-                    token_features[key] = token_features.get(key, 0) + value
-
-        # N-grammi di POS
-        if "pos_ngrams" in config:
-            for n in config["pos_ngrams"]:
-                features = extract_token_ngrams(pos_tags, n, "POS")
-                for key, value in features.items():
-                    token_features[key] = token_features.get(key, 0) + value
-
-    # Normalizzazione
-    if config.get("normalize", True):
-        num_words = doc.num_tokens()
-        num_chars = doc.num_chars()
-
-        if num_words > 0:
-            for key in token_features:
-                token_features[key] = token_features[key] / num_words
-        if num_chars > 0:
-            for key in char_features:
-                char_features[key] = char_features[key] / num_chars
-
-    return {**token_features, **char_features}
-
-
-def filter_rare_features(features_list, min_docs=2):
-    """Filtra features che appaiono in meno di min_docs documenti."""
-    feature_counts = defaultdict(int)
-    for doc_features in features_list:
-        for feature in doc_features.keys():
-            feature_counts[feature] += 1
-
-    filtered = []
-    for doc_features in features_list:
-        filtered.append(
-            {f: v for f, v in doc_features.items() if feature_counts[f] >= min_docs}
-        )
-
-    num_before = len(feature_counts)
-    num_after = len([f for f, c in feature_counts.items() if c >= min_docs])
-    print(f"  Features filtrate: {num_before} -> {num_after}")
-
-    return filtered
-
-
-def prepare_data(documents, config, vectorizer=None, scaler=None, fit=True):
-    """Prepara dati per training/test."""
-    features_list = []
-    labels = []
-
-    for doc in documents:
-        features_list.append(extract_document_features(doc, config))
-        labels.append(doc.author)
-
-    # Filtra features rare solo in training
-    if fit and config.get("min_docs", 2) > 1:
-        features_list = filter_rare_features(features_list, config["min_docs"])
-
-    # Vectorize
-    if fit:
-        vectorizer = DictVectorizer()
-        X = vectorizer.fit_transform(features_list)
-    else:
-        X = vectorizer.transform(features_list)
-
-    y = np.array(labels)
-
-    # Scale
-    if fit:
-        scaler = MaxAbsScaler()
-        X = scaler.fit_transform(X)
-    else:
-        X = scaler.transform(X)
-
-    return X, y, vectorizer, scaler
-
+def extract_features(text, config):
+    """Estrae features (n-grammi) da un testo."""
+    doc = get_nlp()(text)
+    words = [t.text.lower() for t in doc if not t.is_space]
+    lemmas = [t.lemma_.lower() for t in doc if not t.is_space]
+    pos = [t.pos_ for t in doc if not t.is_space]
+    
+    feats = {}
+    
+    # Character n-grams
+    if "char_ngrams" in config:
+        for n in config["char_ngrams"]:
+            for i in range(len(text) - n + 1):
+                k = f"CHAR_{n}_{text[i:i+n]}"
+                feats[k] = feats.get(k, 0) + 1
+                
+    # Token n-grams (Word, Lemma, POS)
+    for pfx, lst in [("WORD", words), ("LEMMA", lemmas), ("POS", pos)]:
+        cfg_key = pfx.lower() + "_ngrams"
+        if cfg_key in config:
+            for n in config[cfg_key]:
+                for i in range(len(lst) - n + 1):
+                    k = f"{pfx}_{n}_" + "_".join(lst[i:i+n])
+                    feats[k] = feats.get(k, 0) + 1
+    
+    # Normalizzazione basata sul numero di parole (per token feats) o caratteri (per char feats)
+    # Per semplicità, dividiamo tutto per il numero di parole se presenti
+    if len(words) > 0 and config.get("normalize", True):
+        feats = {k: v / len(words) for k, v in feats.items()}
+        
+    return feats
 
 def get_configurations():
-    """Definisce le configurazioni da testare."""
-    return [
-        {
-            "name": "Char_1-3",
-            "char_ngrams": [1, 2, 3],
-            "normalize": True,
-            "min_docs": 2,
-        },
-        {
-            "name": "Word_1-2",
-            "word_ngrams": [1, 2],
-            "normalize": True,
-            "min_docs": 2,
-        },
-        {
-            "name": "Lemma_1-2",
-            "lemma_ngrams": [1, 2],
-            "normalize": True,
-            "min_docs": 2,
-        },
-        {
-            "name": "POS_1-3",
-            "pos_ngrams": [1, 2, 3],
-            "normalize": True,
-            "min_docs": 2,
-        },
-        {
-            "name": "Word_Char",
-            "word_ngrams": [1, 2],
-            "char_ngrams": [2, 3],
-            "normalize": True,
-            "min_docs": 2,
-        },
-        {
-            "name": "Lemma_POS",
-            "lemma_ngrams": [1, 2],
-            "pos_ngrams": [1, 2, 3],
-            "normalize": True,
-            "min_docs": 2,
-        },
-        {
-            "name": "All_Features",
-            "char_ngrams": [2, 3],
-            "word_ngrams": [1, 2],
-            "lemma_ngrams": [1, 2],
-            "pos_ngrams": [1, 2, 3],
-            "normalize": True,
-            "min_docs": 3,
-        },
-    ]
-
-
-def analyze_feature_importance(svm, vectorizer, top_n=15):
-    """Analizza le features piu importanti."""
-    feature_names = vectorizer.get_feature_names_out()
-    coefs = svm.coef_
-
-    print(f"\nTOP {top_n} FEATURES PER AUTORE:")
-    print("-" * 50)
-
-    for idx, author in enumerate(AUTHORS):
-        print(f"\n{author.upper()}:")
-        author_coefs = coefs[idx] if len(coefs.shape) > 1 else coefs
-
-        pairs = list(zip(feature_names, author_coefs))
-        pairs.sort(key=lambda x: abs(x[1]), reverse=True)
-
-        for i, (feature, coef) in enumerate(pairs[:top_n], 1):
-            direction = "+" if coef > 0 else "-"
-            print(f"  {i:2d}. {feature:<35} {direction} {abs(coef):.4f}")
-
+    """Genera configurazioni incrementali per ogni tipo di n-gramma."""
+    configs = []
+    # Singoli tipi (Char, Word, Lemma, POS) incrementali da 1 a 6 (Char da 2)
+    for pfx, key in [("Char", "char_ngrams"), ("Word", "word_ngrams"), 
+                     ("Lemma", "lemma_ngrams"), ("POS", "pos_ngrams")]:
+        start = 2 if pfx == "Char" else 1
+        for n in range(start, 7):
+            cfg = {"name": f"{pfx}_1-{n}", key: list(range(start, n + 1)), "normalize": True, "min_docs": 2}
+            configs.append(cfg)
+    
+    # Configurazioni miste
+    configs.extend([
+        {"name": "Word_Char", "word_ngrams": [1, 2], "char_ngrams": [2, 3, 4], "normalize": True, "min_docs": 2},
+        {"name": "Lemma_POS", "lemma_ngrams": [1, 2], "pos_ngrams": [1, 2, 3], "normalize": True, "min_docs": 2},
+        {"name": "All_Features", "char_ngrams": [2, 3, 4], "word_ngrams": [1, 2], "lemma_ngrams": [1, 2], "pos_ngrams": [1, 2, 3], "normalize": True, "min_docs": 3},
+    ])
+    return configs
 
 def run(base_path):
-    """Pipeline completa per SVM con n-grammi."""
     print("=" * 70)
-    print("TASK 2: SVM + N-GRAMMI")
+    print("TASK 3: SVM + N-GRAMMI")
     print("=" * 70)
 
-    # 1. Caricamento dati
-    print("\nFASE 1: CARICAMENTO DATI")
-    print("-" * 40)
-
-    datasets = load_documents(base_path)
-    train_docs = datasets["training"]
-    test_docs = datasets["test"]
-    eval_docs = datasets["eval"]
-
-    print(f"\nRiepilogo:")
-    print(f"  Training: {len(train_docs)} documenti")
-    print(f"  Test: {len(test_docs)} documenti")
-    print(f"  Eval: {len(eval_docs)} documenti")
-
-    if len(train_docs) == 0:
-        print("ERRORE: Nessun documento di training!")
+    data_raw = utils.load_dataset_flat(base_path)
+    if not data_raw["training"]:
+        print("ERRORE: Dataset non caricato correttamente.")
         return
-
-    # 2. Test configurazioni
-    print("\nFASE 2: TEST CONFIGURAZIONI (Validation Set)")
-    print("-" * 40)
 
     configs = get_configurations()
-    all_results = []
-
-    for i, config in enumerate(configs, 1):
-        print(f"\n[{i}/{len(configs)}] {config['name']}")
-
+    results = []
+    print(f"\n[1/3] Validazione {len(configs)} configurazioni (Accuracy)...")
+    
+    # Pre-processiamo i documenti una volta sola per velocizzare? No, facciamo on-the-fly per semplicità
+    # ma salviamo i risultati intermedi se necessario.
+    
+    for i, cfg in enumerate(configs, 1):
+        print(f"  [{i}/{len(configs)}] {cfg['name']}...", end=" ", flush=True)
         try:
-            X_train, y_train, vectorizer, scaler = prepare_data(
-                train_docs, config, fit=True
-            )
-            print(f"  Matrice training: {X_train.shape}")
-
-            svm = LinearSVC(
-                dual=False, max_iter=10000, random_state=42, class_weight="balanced"
-            )
-            svm.fit(X_train, y_train)
-
-            if not eval_docs:
-                print("  ERRORE: Eval set vuoto, impossibile selezionare il modello.")
-                return
-
-            X_eval, y_eval, _, _ = prepare_data(
-                eval_docs, config, vectorizer, scaler, fit=False
-            )
-            pred_eval = svm.predict(X_eval)
-
-            eval_acc = accuracy_score(y_eval, pred_eval)
-            eval_f1 = f1_score(y_eval, pred_eval, average="macro")
-
-            all_results.append(
-                {
-                    "config_name": config["name"],
-                    "eval_accuracy": eval_acc,
-                    "eval_f1_macro": eval_f1,
-                }
-            )
-
-            print(f"  Eval Accuracy: {eval_acc:.4f}")
-            print(f"  Eval F1-Macro: {eval_f1:.4f}")
-
+            X_tr_feats = [extract_features(t, cfg) for t, a in data_raw["training"]]
+            y_tr = np.array([a for t, a in data_raw["training"]])
+            
+            vec = DictVectorizer()
+            X_tr = vec.fit_transform(X_tr_feats)
+            
+            if X_tr.shape[1] == 0:
+                print("Saltato (0 features)")
+                continue
+                
+            scl = MaxAbsScaler()
+            X_tr = scl.fit_transform(X_tr)
+            
+            svm = LinearSVC(dual=False, max_iter=5000, class_weight="balanced", random_state=42).fit(X_tr, y_tr)
+            
+            X_ev_feats = [extract_features(t, cfg) for t, a in data_raw["eval"]]
+            y_ev = np.array([a for t, a in data_raw["eval"]])
+            X_ev = scl.transform(vec.transform(X_ev_feats))
+            
+            score = accuracy_score(y_ev, svm.predict(X_ev))
+            print(f"Accuracy: {score:.4f}")
+            results.append({"name": cfg["name"], "acc": score, "cfg": cfg})
         except Exception as e:
-            print(f"  ERRORE: {str(e)}")
+            print(f"ERRORE: {e}")
 
-    # 3. Confronto risultati
-    print("\nFASE 3: CONFRONTO RISULTATI")
-    print("-" * 40)
+    results.sort(key=lambda x: x["acc"], reverse=True)
+    best = results[0]
+    print(f"\nMigliore configurazione: {best['name']} (Acc={best['acc']:.4f})")
 
-    print(f"\n{'Configurazione':<20} {'Eval Acc':<12} {'Eval F1':<12}")
-    print("-" * 60)
+    print("\n[2/3] Retraining finale su Training + Eval set...")
+    full_data = data_raw["training"] + data_raw["eval"]
+    X_full_feats = [extract_features(t, best["cfg"]) for t, a in full_data]
+    y_full = np.array([a for t, a in full_data])
+    
+    final_vec = DictVectorizer()
+    X_full = final_vec.fit_transform(X_full_feats)
+    final_scl = MaxAbsScaler()
+    X_full = final_scl.fit_transform(X_full)
+    
+    final_svm = LinearSVC(dual=False, max_iter=5000, class_weight="balanced", random_state=42)
+    final_svm.fit(X_full, y_full)
 
-    for r in all_results:
-        print(
-            f"{r['config_name']:<20} {r['eval_accuracy']:.4f}       {r['eval_f1_macro']:.4f}"
-        )
+    print("\n[3/3] Valutazione finale sul TEST SET...")
+    X_te_feats = [extract_features(t, best["cfg"]) for t, a in data_raw["test"]]
+    y_te = np.array([a for t, a in data_raw["test"]])
+    X_te = final_scl.transform(final_vec.transform(X_te_feats))
+    
+    test_pred = final_svm.predict(X_te)
+    utils.print_evaluation(y_te, test_pred, labels=final_svm.classes_, title="RISULTATI TEST SET")
 
-    # 4. Selezione migliore e valutazione finale
-    print("\nFASE 4: VALUTAZIONE MIGLIORE CONFIGURAZIONE")
-    print("-" * 40)
-
-    best = max(all_results, key=lambda x: x["eval_f1_macro"])
-    best_config = next(c for c in configs if c["name"] == best["config_name"])
-
-    print(f"\nMigliore: {best['config_name']}")
-    print(f"  Eval Accuracy: {best['eval_accuracy']:.4f}")
-    print(f"  Eval F1-Macro: {best['eval_f1_macro']:.4f}")
-
-    # Training finale
-    X_train, y_train, vectorizer, scaler = prepare_data(train_docs, best_config, fit=True)
-
-    svm = LinearSVC(
-        dual=False, max_iter=10000, random_state=42, class_weight="balanced"
-    )
-    svm.fit(X_train, y_train)
-
-    # Valutazione su test
-    if test_docs:
-        X_test, y_test, _, _ = prepare_data(
-            test_docs, best_config, vectorizer, scaler, fit=False
-        )
-        pred = svm.predict(X_test)
-
-        print(f"\nTEST SET ({len(test_docs)} documenti):")
-        print(f"  Accuracy: {accuracy_score(y_test, pred):.4f}")
-        print(f"  F1-Macro: {f1_score(y_test, pred, average='macro'):.4f}")
-        print(classification_report(y_test, pred, target_names=AUTHORS, zero_division=0))
-
-    # Feature importance testuale
-    analyze_feature_importance(svm, vectorizer, top_n=15)
-
-    # --- PLOTTING ---
     try:
-        from . import utils_plot
+        import utils_plot
         utils_plot.set_style()
-
-        # 1. Confronto Configurazioni
-        # Rinominiamo le chiavi per adattarle a utils_plot
-        plot_data = [{"name": r["config_name"], "f1_macro": r["eval_f1_macro"]} for r in all_results]
-        utils_plot.plot_model_comparison(
-            plot_data, 
-            metric_key="f1_macro", 
-            title="Task 3 - Confronto Configurazioni N-grammi (Validation)", 
-            filename="03_model_comparison.png"
-        )
-
-        # 2. Matrice di Confusione (Test Set)
-        if test_docs:
-            utils_plot.plot_confusion_matrix(
-                y_test, pred, 
-                labels=svm.classes_,
-                title=f"Task 3 - Confusion Matrix ({best['config_name']})",
-                filename="03_confusion_matrix.png"
-            )
-
-    except ImportError:
-        print("Modulo utils_plot non trovato, salto generazione grafici.")
-
-    print("\n" + "=" * 70)
-    print("PIPELINE COMPLETATA!")
-    print("=" * 70)
-
-    return svm, vectorizer, scaler, all_results
-
-
+        plot_data = [{"name": r["name"], "f1_macro": r["acc"]} for r in results] # Usiamo acc come proxy
+        utils_plot.plot_model_comparison(plot_data, "f1_macro", "Task 3 - Model Comparison", "03_model_comparison.png")
+        utils_plot.plot_confusion_matrix(y_te, test_pred, final_svm.classes_, "Task 3 Confusion Matrix", "03_confusion_matrix.png")
+    except:
+        pass
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    dataset_path = os.path.join(base_dir, "dataset_authorship_finale")
-
-    if not os.path.exists(dataset_path):
-        print(f"ERRORE: Dataset non trovato: {dataset_path}")
-        print("Esegui prima 01_data_preparation.py")
-        return
-
-    run(dataset_path)
-
+    run(os.path.join(base_dir, "dataset_authorship_finale"))
 
 if __name__ == "__main__":
     main()

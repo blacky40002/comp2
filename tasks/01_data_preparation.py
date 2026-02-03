@@ -140,8 +140,8 @@ def paragraphs_from_text(text, min_words, max_words):
 
 def paragraphs_from_file(file_path, min_words, max_words):
     try:
-        with open(file_path, "r", encoding="utf-8-sig") as handle:
-            text = handle.read()
+        with open(file_path, "r", encoding="utf-8-sig") as t:
+            text = t.read()
     except (OSError, UnicodeDecodeError) as e:
         print(f"ATTENZIONE: file saltato {file_path} ({e})")
         return []
@@ -161,11 +161,6 @@ def write_paragraphs(paragraphs, output_dir, split, author):
 
 
 def build_dataset(training_dir, test_val_dir, output_dir, min_words, max_words, test_size):
-    """Genera dataset flat: tutti i file in una sola directory.
-
-    Nomi file: {split}___{autore}___{indice}.txt
-    Il nome del file codifica split e autore, senza bisogno di sottocartelle.
-    """
     reset_dir(output_dir)
 
     stats = {"training": {}, "test": {}, "eval": {}}
@@ -200,12 +195,8 @@ def build_dataset(training_dir, test_val_dir, output_dir, min_words, max_words, 
 
     return {"output_dir": output_dir, "stats": stats}
 
-
+"""
 def load_dataset(dataset_dir):
-    """Carica il dataset flat. File nella forma: {split}___{autore}___{indice}.txt
-
-    Returns: {"training": [(testo, autore), ...], "test": [...], "eval": [...]}
-    """
     data = {"training": [], "test": [], "eval": []}
     pattern = re.compile(r"^(training|test|eval)___(.+)___\d+\.txt$")
     split_map = {"training": "training", "test": "test", "eval": "eval"}
@@ -223,7 +214,7 @@ def load_dataset(dataset_dir):
             data[split_key].append((text, author))
 
     return data
-
+"""
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -263,7 +254,9 @@ def main():
     print(f"\nStep 2: dataset creato -> {result['output_dir']}")
     for split_name, author_counts in result["stats"].items():
         total = sum(author_counts.values())
-        print(f"  {split_name}: {total} paragrafi")
+        print(f"  {split_name.upper()}: {total} paragrafi totali")
+        for author, count in author_counts.items():
+            print(f"    - {author}: {count}")
 
 
 if __name__ == "__main__":
