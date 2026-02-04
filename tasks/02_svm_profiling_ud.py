@@ -1,18 +1,8 @@
-"""
-Task 1: SVM lineare con features Profiling-UD.
-
-Per preparare i dati:
-1. Zippa tutti i file .txt da dataset_authorship_finale/
-2. Carica su http://linguistic-profiling.italianlp.it/
-3. Scarica il CSV e aggiorna il path sotto
-"""
-
 import os
 import sys
-# Aggiungi la root del progetto al path per permettere l'import di seville
+# Aggiungo la root del progetto al path per permettere l'import di seville
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-import re
 import csv
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -20,8 +10,6 @@ from sklearn.model_selection import KFold
 from sklearn.svm import LinearSVC
 from sklearn.metrics import f1_score, accuracy_score
 import seville.tasks.utils_shared as utils
-
-AUTHORS = ["primo_autore", "secondo_autore", "terzo_autore"]
 
 def load_profiling_features(csv_path):
     """Carica features dal CSV di Profiling-UD."""
@@ -46,13 +34,9 @@ def load_profiling_features(csv_path):
     return feature_names, dataset
 
 def run(csv_path):
-    print("=" * 60)
     print("TASK 2: SVM + PROFILING-UD")
-    print("=" * 60)
-
     feature_names, dataset = load_profiling_features(csv_path)
-    
-    # Divisione dati manuale e robusta
+    # Divisione dati
     X_train, y_train = [], []
     X_test, y_test = [], []
     X_eval, y_eval = [], []
@@ -72,12 +56,7 @@ def run(csv_path):
     X_test, y_test = np.array(X_test), np.array(y_test)
     X_eval, y_eval = np.array(X_eval), np.array(y_eval)
 
-    if len(X_train) == 0:
-        print("ERRORE: Training set vuoto!")
-        return
-
-    # 1. CROSS-VALIDATION sul Training Set (Parametro C di default)
-    print("\n[1/4] Cross-validation (5-fold) sul Training Set...")
+    print("\nCross validation")
     splitter = KFold(n_splits=5, shuffle=True, random_state=42)
     cv_scores = []
     for train_idx, val_idx in splitter.split(X_train):
@@ -88,8 +67,8 @@ def run(csv_path):
         cv_scores.append(f1_score(y_train[val_idx], m.predict(X_va), average='macro'))
     print(f"  Media F1-Macro CV: {np.mean(cv_scores):.4f}")
 
-    # 2. SELEZIONE MODELLO (Tuning di C sull'Eval Set)
-    print("\n[2/4] Selezione iperparametri (C) sull'Eval Set...")
+    #Selezione modello
+    print("\n Selezione iperparametro C")
     best_acc = -1
     best_c = 1.0
     scaler = MinMaxScaler()
@@ -99,14 +78,14 @@ def run(csv_path):
     for c in [0.01, 0.1, 1.0, 10.0, 20.0, 30.0,40.0]:
         m = LinearSVC(dual=False, C=c, max_iter=10000, random_state=42, class_weight="balanced").fit(X_train_scaled, y_train)
         score = accuracy_score(y_eval, m.predict(X_eval_scaled))
-        print(f"  C={c:<5} -> Eval Accuracy={score:.4f}")
+        print(f"  C={c:<5} Eval Accuracy={score:.4f}")
         if score > best_acc:
             best_acc = score
             best_c = c
-    print(f"  Miglior C scelto: {best_c}")
+    print(f"  Miglior C: {best_c}")
 
-    # 3. RETRAINING FINALE (Training + Eval)
-    print("\n[3/4] Retraining finale su Training + Eval set...")
+    # Retraining finale
+    print("\nRetraining finale su Training + Eval set")
     X_full = np.concatenate([X_train, X_eval])
     y_full = np.concatenate([y_train, y_eval])
     
@@ -116,13 +95,13 @@ def run(csv_path):
     final_svm = LinearSVC(dual=False, C=best_c, max_iter=10000, random_state=42, class_weight="balanced")
     final_svm.fit(X_full_scaled, y_full)
 
-    # 4. VALUTAZIONE FINALE sul Test Set
-    print("\n[4/4] Valutazione finale sul TEST SET...")
+    # valutazione finale
+    print("\n[Valutazione finale sul test set")
     X_test_scaled = final_scaler.transform(X_test)
     test_pred = final_svm.predict(X_test_scaled)
     utils.print_evaluation(y_test, test_pred, labels=final_svm.classes_, title="RISULTATI TEST SET")
 
-    # Plotting
+    # Grafici
     try:
         import utils_plot
         utils_plot.set_style()

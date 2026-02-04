@@ -110,6 +110,9 @@ def count_words(text):
 def clean_paragraph(paragraph):
     if not paragraph:
         return ""
+    # Normalizza apostrofi e virgolette singole'
+    paragraph = re.sub(r"[\u2018\u2019\u00b4\u0060]", "'", paragraph)
+    
     paragraph = re.sub(
         r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f"
         r"\u00ad\u200b-\u200f\u2028-\u2029\ufeff\ufffd]",
@@ -150,7 +153,7 @@ def paragraphs_from_file(file_path, min_words, max_words):
 
 
 def write_paragraphs(paragraphs, output_dir, split, author):
-    """Scrive i paragrafi con naming convention SPLIT___AUTORE___ID.txt"""
+    """Scrive i paragrafi con la convenzione:SPLIT___AUTORE___ID.txt"""
     author_tag = author.replace(" ", "_")
     os.makedirs(output_dir, exist_ok=True)
     for i, paragraph in enumerate(paragraphs, 1):
@@ -194,27 +197,6 @@ def build_dataset(training_dir, test_val_dir, output_dir, min_words, max_words, 
             write_paragraphs(par_eval, output_dir, "eval", author)
 
     return {"output_dir": output_dir, "stats": stats}
-
-"""
-def load_dataset(dataset_dir):
-    data = {"training": [], "test": [], "eval": []}
-    pattern = re.compile(r"^(training|test|eval)___(.+)___\d+\.txt$")
-    split_map = {"training": "training", "test": "test", "eval": "eval"}
-
-    for filename in sorted(os.listdir(dataset_dir)):
-        m = pattern.match(filename)
-        if not m:
-            continue
-        split_key = split_map[m.group(1)]
-        author = m.group(2)
-
-        with open(os.path.join(dataset_dir, filename), "r", encoding="utf-8") as f:
-            text = f.read().strip()
-        if text:
-            data[split_key].append((text, author))
-
-    return data
-"""
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
